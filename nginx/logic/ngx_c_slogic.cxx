@@ -14,6 +14,7 @@
 #include <sys/ioctl.h> //ioctl
 #include <arpa/inet.h>
 #include <pthread.h>   //多线程
+#include <vector>
 
 #include "ngx_c_conf.h"
 #include "ngx_macro.h"
@@ -50,6 +51,79 @@ static const handler statusHandler[] =
 
 };
 #define AUTH_TOTAL_COMMANDS sizeof(statusHandler)/sizeof(handler) //整个命令有多少个，编译时即可知道
+
+namespace
+{
+// 一轮牌局中单个玩家的状态。
+typedef struct _POKER_PLAYER_STATE
+{
+    bool folded;
+    bool allin;
+    bool hasCards;
+}POKER_PLAYER_STATE;
+
+// 牌局状态机中和“公共牌展示/开牌”直接相关的最小状态。
+typedef struct _POKER_ROUND_STATE
+{
+    std::vector<int> communityCards;
+    size_t revealedCommunityCount;
+    bool reachedShowdown;
+
+    _POKER_ROUND_STATE()
+    {
+        communityCards.clear();
+        revealedCommunityCount = 0;
+        reachedShowdown = false;
+    }
+
+    // 进入下一轮时必须把公共牌重新盖住，避免沿用上一轮展示状态。
+    void resetForNextRound()
+    {
+        communityCards.clear();
+        revealedCommunityCount = 0;
+        reachedShowdown = false;
+    }
+
+    // 仅当“加注流程完整结束进入 showdown，且仍有两名及以上未弃牌玩家”时允许开牌。
+    bool canRevealHandsAtShowdown(const std::vector<POKER_PLAYER_STATE> &players) const
+    {
+        if(reachedShowdown == false)
+        {
+            return false;
+        }
+
+        int activePlayers = 0;
+        for(size_t i = 0; i < players.size(); ++i)
+        {
+            if(players[i].folded == false)
+            {
+                ++activePlayers;
+            }
+        }
+
+        return (activePlayers >= 2);
+    }
+
+    // 开牌前校验：所有仍在局内的玩家必须持有有效手牌。
+    bool validateHandsForWinnerCheck(const std::vector<POKER_PLAYER_STATE> &players) const
+    {
+        if(canRevealHandsAtShowdown(players) == false)
+        {
+            return false;
+        }
+
+        for(size_t i = 0; i < players.size(); ++i)
+        {
+            if(players[i].folded == false && players[i].hasCards == false)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+}POKER_ROUND_STATE;
+}
 
 //构造函数
 CLogicSocket::CLogicSocket()
